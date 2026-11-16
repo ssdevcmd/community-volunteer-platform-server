@@ -84,6 +84,7 @@ const requireOrganizer = (
 
 // Event Validation Helpers
 const categories = [
+  "All",
   "Environment",
   "Education",
   "Healthcare",
