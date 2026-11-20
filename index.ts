@@ -15,11 +15,11 @@ app.use(express.json());
 const uri = process.env.MONGO_URI as string;
 
 const client = new MongoClient(uri, {
-    serverApi: {
-        version: ServerApiVersion.v1,
-        strict: true,
-        deprecationErrors: true,
-    }
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  }
 });
 
 // Event type
@@ -42,29 +42,43 @@ interface EventDocument {
 
 let eventsCollection: Collection<EventDocument>;
 
+
+interface OrganizerProfile {
+  organizerId: string;
+  organizationName: string;
+  phone: string;
+  location: string;
+  bio: string;
+  website: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+let organizerProfilesCollection: Collection<OrganizerProfile>;
+
 // Setup JWKS for token verification
 const JWKS = createRemoteJWKSet(
-    new URL(`${process.env.CLIENT_URL || 'http://localhost:3000'}/api/auth/jwks`)
+  new URL(`${process.env.CLIENT_URL || 'http://localhost:3000'}/api/auth/jwks`)
 );
 
 // Token Verification Middleware
 const verifyToken = async (req: Request, res: Response, next: NextFunction): Promise<any> => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) {
-        return res.status(401).json({ message: 'Unauthorized' });
-    }
-    const token = authHeader.split(' ')[1];
-    if (!token) {
-        return res.status(401).json({ message: 'Unauthorized' });
-    }
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  const token = authHeader.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
 
-    try {
-        const { payload } = await jwtVerify(token, JWKS);
-        (req as any).user = payload;
-        next();
-    } catch (error) {
-        return res.status(403).json({ message: 'Forbidden' });
-    }
+  try {
+    const { payload } = await jwtVerify(token, JWKS);
+    (req as any).user = payload;
+    next();
+  } catch (error) {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
 };
 
 // Organizer Authorization
@@ -104,6 +118,101 @@ const escapeRegex = (value: string): string => {
 // ===============================
 // ROUTES
 // ===============================
+
+
+// GET Organizer Profile
+app.get(
+  "/api/organizer/profile",
+  verifyToken,
+  requireOrganizer,
+  async (req: Request, res: Response) => {
+    try {
+      const organizerId = (req as any).user.id;
+
+      const profile = await organizerProfilesCollection.findOne({
+        organizerId,
+      });
+
+      res.status(200).json({
+        success: true,
+        profile,
+      });
+    } catch (error) {
+      console.error("Get organizer profile error:", error);
+
+      res.status(500).json({
+        message: "Failed to fetch organizer profile.",
+      });
+    }
+  }
+);
+
+// CREATE OR UPDATE Organizer Profile
+app.put(
+  "/api/organizer/profile",
+  verifyToken,
+  requireOrganizer,
+  async (req: Request, res: Response) => {
+    try {
+      const organizerId = (req as any).user.id;
+
+      const {
+        organizationName,
+        phone,
+        location,
+        bio,
+        website,
+      } = req.body;
+
+      if (
+        typeof organizationName !== "string" ||
+        !organizationName.trim()
+      ) {
+        res.status(400).json({
+          message: "Organization name is required.",
+        });
+        return;
+      }
+
+      const profileData = {
+        organizationName: organizationName.trim(),
+        phone: typeof phone === "string" ? phone.trim() : "",
+        location: typeof location === "string" ? location.trim() : "",
+        bio: typeof bio === "string" ? bio.trim() : "",
+        website: typeof website === "string" ? website.trim() : "",
+        updatedAt: new Date(),
+      };
+
+      await organizerProfilesCollection.updateOne(
+        { organizerId },
+        {
+          $set: profileData,
+          $setOnInsert: {
+            organizerId,
+            createdAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+
+      const profile = await organizerProfilesCollection.findOne({
+        organizerId,
+      });
+
+      res.status(200).json({
+        success: true,
+        message: "Profile saved successfully.",
+        profile,
+      });
+    } catch (error) {
+      console.error("Update organizer profile error:", error);
+
+      res.status(500).json({
+        message: "Failed to save organizer profile.",
+      });
+    }
+  }
+);
 
 // GET All Published Events
 app.get("/api/events", async (req: Request, res: Response) => {
@@ -313,9 +422,9 @@ app.patch(
       const { id } = req.params;
 
       if (typeof id !== 'string' || !ObjectId.isValid(id)) {
-      res.status(400).json({ message: "Invalid event ID." });
-      return;
-    }
+        res.status(400).json({ message: "Invalid event ID." });
+        return;
+      }
 
       const user = (req as any).user;
 
@@ -509,9 +618,9 @@ app.delete(
       const { id } = req.params;
 
       if (typeof id !== 'string' || !ObjectId.isValid(id)) {
-      res.status(400).json({ message: "Invalid event ID." });
-      return;
-    }
+        res.status(400).json({ message: "Invalid event ID." });
+        return;
+      }
 
       const user = (req as any).user;
 
@@ -540,25 +649,32 @@ app.delete(
 );
 
 app.get('/', (req: Request, res: Response) => {
-    res.send('Server is running fine');
+  res.send('Server is running fine');
 });
 
 // Database Connection & Server Startup
 async function startServer() {
-    try {
-        await client.connect();
-        const db = client.db('community-volunteer-platform');
-        eventsCollection = db.collection<EventDocument>("events");
-        
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+  try {
+    await client.connect();
+    const db = client.db("community-volunteer-platform");
 
-        app.listen(Number(PORT), () => {
-            console.log(`Server running on port ${PORT}`);
-        });
-    } catch (error) {
-        console.error("Failed to connect to MongoDB", error);
-        process.exit(1);
-    }
+    eventsCollection = db.collection<EventDocument>("events");
+
+    organizerProfilesCollection =
+      db.collection<OrganizerProfile>("organizer_profiles");
+
+    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+
+    app.listen(Number(PORT), () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error("Failed to connect to MongoDB", error);
+    process.exit(1);
+  }
 }
 
 startServer();
+
+
+
