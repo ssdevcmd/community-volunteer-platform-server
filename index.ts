@@ -797,6 +797,124 @@ app.post(
   }
 );
 
+// Get/ api/registrations
+app.get(
+  "/api/registrations/my-registrations",
+  verifyToken,
+  requireVolunteer,
+  async (req: Request, res: Response) => {
+    try {
+      const volunteerId = (req as any).user.id;
+
+      const registrations = await registrationsCollection
+        .find({ volunteerId })
+        .sort({ registeredAt: -1 })
+        .toArray();
+
+      const registrationsWithEvents = await Promise.all(
+        registrations.map(async (registration) => {
+          const event = await eventsCollection.findOne({
+            _id: new ObjectId(registration.eventId),
+          });
+
+          return {
+            ...registration,
+            event,
+          };
+        })
+      );
+
+      res.status(200).json({
+        success: true,
+        registrations: registrationsWithEvents,
+      });
+    } catch (error) {
+      console.error("Fetch registrations error:", error);
+
+      res.status(500).json({
+        message: "Failed to fetch your registrations.",
+      });
+    }
+  }
+);
+
+// PATCH /api/registrations/:id/status
+app.patch(
+  "/api/registrations/:id/cancel",
+  verifyToken,
+  requireVolunteer,
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const volunteerId = (req as any).user.id;
+
+      if (typeof id !== "string" || !ObjectId.isValid(id)) {
+        res.status(400).json({
+          message: "Invalid registration ID.",
+        });
+        return;
+      }
+
+      const registration = await registrationsCollection.findOne({
+        _id: new ObjectId(id),
+        volunteerId,
+      });
+
+      if (!registration) {
+        res.status(404).json({
+          message: "Registration not found.",
+        });
+        return;
+      }
+
+      if (
+        !["PENDING", "CONFIRMED"].includes(registration.status)
+      ) {
+        res.status(400).json({
+          message: "This registration cannot be cancelled.",
+        });
+        return;
+      }
+
+      const event = await eventsCollection.findOne({
+        _id: new ObjectId(registration.eventId),
+      });
+
+      if (!event || new Date(event.date) <= new Date()) {
+        res.status(400).json({
+          message: "You cannot cancel after the event has started.",
+        });
+        return;
+      }
+
+      await registrationsCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+          volunteerId,
+        },
+        {
+          $set: {
+            status: "CANCELLED",
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Registration cancelled successfully.",
+      });
+    } catch (error) {
+      console.error("Cancel registration error:", error);
+
+      res.status(500).json({
+        message: "Failed to cancel registration.",
+      });
+    }
+  }
+);
+
+
 app.get('/', (req: Request, res: Response) => {
   res.send('Server is running fine');
 });
