@@ -914,6 +914,58 @@ app.patch(
   }
 );
 
+// GET /api/registrations/stats
+app.get(
+  "/api/registrations/stats",
+  verifyToken,
+  requireVolunteer,
+  async (req: Request, res: Response) => {
+    try {
+      const volunteerId = (req as any).user.id;
+
+      const [
+        total,
+        confirmed,
+        pending,
+        completed,
+      ] = await Promise.all([
+        registrationsCollection.countDocuments({
+          volunteerId,
+          status: { $ne: "CANCELLED" },
+        }),
+        registrationsCollection.countDocuments({
+          volunteerId,
+          status: "CONFIRMED",
+        }),
+        registrationsCollection.countDocuments({
+          volunteerId,
+          status: "PENDING",
+        }),
+        registrationsCollection.countDocuments({
+          volunteerId,
+          status: "COMPLETED",
+        }),
+      ]);
+
+      res.status(200).json({
+        success: true,
+        stats: {
+          total,
+          confirmed,
+          pending,
+          completed,
+        },
+      });
+    } catch (error) {
+      console.error("Registration stats error:", error);
+
+      res.status(500).json({
+        message: "Failed to fetch registration statistics.",
+      });
+    }
+  }
+);
+
 
 app.get('/', (req: Request, res: Response) => {
   res.send('Server is running fine');
