@@ -43,6 +43,25 @@ interface EventDocument {
 let eventsCollection: Collection<EventDocument>;
 
 
+// Volunteer Registration type
+type RegistrationStatus =
+  | "PENDING"
+  | "CONFIRMED"
+  | "COMPLETED"
+  | "CANCELLED";
+
+interface RegistrationDocument {
+  eventId: string;
+  volunteerId: string;
+  status: RegistrationStatus;
+  registeredAt: Date;
+  updatedAt: Date;
+}
+
+let registrationsCollection: Collection<RegistrationDocument>;
+
+
+// Organizer Profile type
 interface OrganizerProfile {
   organizerId: string;
   organizationName: string;
@@ -90,6 +109,21 @@ const requireOrganizer = (
   if ((req as any).user?.role !== "ORGANIZER") {
     res.status(403).json({
       message: "Only organizers can perform this action.",
+    });
+    return;
+  }
+  next();
+};
+
+// Volunteer Authorization
+const requireVolunteer = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void => {
+  if ((req as any).user?.role !== "VOLUNTEER") {
+    res.status(403).json({
+      message: "Only volunteers can perform this action.",
     });
     return;
   }
@@ -648,6 +682,121 @@ app.delete(
   }
 );
 
+
+// Volunteer Registration for an Event API
+
+// POST /api/registrations
+app.post(
+  "/api/registrations",
+  verifyToken,
+  requireVolunteer,
+  async (req: Request, res: Response) => {
+    try {
+      const { eventId } = req.body;
+      const volunteerId = (req as any).user.id;
+
+      if (
+        typeof eventId !== "string" ||
+        !ObjectId.isValid(eventId)
+      ) {
+        res.status(400).json({
+          message: "Invalid event ID.",
+        });
+        return;
+      }
+
+      const event = await eventsCollection.findOne({
+        _id: new ObjectId(eventId),
+        status: "PUBLISHED",
+      });
+
+      if (!event) {
+        res.status(404).json({
+          message: "Published event not found.",
+        });
+        return;
+      }
+
+      const now = new Date();
+
+      if (new Date(event.registrationDeadline) <= now) {
+        res.status(400).json({
+          message: "Registration deadline has passed.",
+        });
+        return;
+      }
+
+      if (new Date(event.date) <= now) {
+        res.status(400).json({
+          message: "This event has already started or ended.",
+        });
+        return;
+      }
+
+      const existingRegistration =
+        await registrationsCollection.findOne({
+          eventId,
+          volunteerId,
+        });
+
+      if (existingRegistration) {
+        res.status(409).json({
+          message: "You have already registered for this event.",
+        });
+        return;
+      }
+
+      const totalRegistrations =
+        await registrationsCollection.countDocuments({
+          eventId,
+          status: {
+            $in: ["PENDING", "CONFIRMED", "COMPLETED"],
+          },
+        });
+
+      if (totalRegistrations >= event.maxVolunteers) {
+        res.status(400).json({
+          message: "Sorry, this event is already full.",
+        });
+        return;
+      }
+
+      const registration: RegistrationDocument = {
+        eventId,
+        volunteerId,
+        status: "PENDING",
+        registeredAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const result =
+        await registrationsCollection.insertOne(registration);
+
+      res.status(201).json({
+        success: true,
+        message: "Successfully registered for the event!",
+        registration: {
+          ...registration,
+          _id: result.insertedId,
+        },
+      });
+    } catch (error: any) {
+      if (error?.code === 11000) {
+        res.status(409).json({
+          message: "You have already registered for this event.",
+        });
+        return;
+      }
+
+      console.error("Registration error:", error);
+
+      res.status(500).json({
+        message: "Failed to register for this event.",
+      });
+    }
+  }
+);
+
 app.get('/', (req: Request, res: Response) => {
   res.send('Server is running fine');
 });
@@ -660,8 +809,11 @@ async function startServer() {
 
     eventsCollection = db.collection<EventDocument>("events");
 
-    organizerProfilesCollection =
-      db.collection<OrganizerProfile>("organizer_profiles");
+    organizerProfilesCollection = db.collection<OrganizerProfile>("organizer_profiles");
+
+    registrationsCollection = db.collection<RegistrationDocument>("registrations");
+
+    await registrationsCollection.createIndex({ eventId: 1, volunteerId: 1 }, { unique: true });
 
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
