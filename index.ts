@@ -48,7 +48,8 @@ type RegistrationStatus =
   | "PENDING"
   | "CONFIRMED"
   | "COMPLETED"
-  | "CANCELLED";
+  | "CANCELLED"
+  | "REJECTED";
 
 interface RegistrationDocument {
   eventId: string;
@@ -965,6 +966,68 @@ app.get(
     }
   }
 );
+
+// Manage registrations for organizer's events
+
+// GET /api/organizer/volunteers
+
+app.get(
+  "/api/organizer/volunteers",
+  verifyToken,
+  requireOrganizer,
+  async (req: Request, res: Response) => {
+    try {
+      const user = (req as any).user;
+
+      // Find only this organizer's events
+      const organizerEvents = await eventsCollection
+        .find({ organizerId: user.id })
+        .toArray();
+
+      if (organizerEvents.length === 0) {
+        return res.status(200).json({
+          success: true,
+          registrations: [],
+        });
+      }
+
+      const eventMap = new Map(
+        organizerEvents.map((event) => [
+          event._id.toString(),
+          event,
+        ])
+      );
+
+      const eventIds = organizerEvents.map((event) =>
+        event._id.toString()
+      );
+
+      // Find registrations for those events
+      const registrations = await registrationsCollection
+        .find({ eventId: { $in: eventIds } })
+        .sort({ registeredAt: -1 })
+        .toArray();
+
+      const result = registrations.map((registration) => ({
+        ...registration,
+        event: eventMap.get(registration.eventId) ?? null,
+      }));
+
+      return res.status(200).json({
+        success: true,
+        registrations: result,
+      });
+    } catch (error) {
+      console.error("Organizer volunteers error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch volunteer registrations.",
+      });
+    }
+  }
+);
+
 
 
 app.get('/', (req: Request, res: Response) => {
