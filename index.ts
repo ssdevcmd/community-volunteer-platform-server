@@ -62,6 +62,35 @@ interface RegistrationDocument {
 let registrationsCollection: Collection<RegistrationDocument>;
 
 
+// Volunteer Application type
+type VolunteerApplicationStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED";
+
+interface VolunteerApplicationDocument {
+  userId: string;
+  name: string;
+  email: string;
+  phone: string;
+  motivation: string;
+  skills: string[];
+  status: VolunteerApplicationStatus;
+  submittedAt: Date;
+  updatedAt: Date;
+  reviewedAt?: Date;
+  reviewedBy?: string;
+}
+
+let volunteerApplicationsCollection:
+  Collection<VolunteerApplicationDocument>;
+
+let usersCollection: Collection;
+
+let sessionsCollection: Collection;
+
+
+
 // Organizer Profile type
 interface OrganizerProfile {
   organizerId: string;
@@ -130,6 +159,25 @@ const requireVolunteer = (
   }
   next();
 };
+
+
+// User Authorization
+const requireUser = (
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void => {
+  if ((req as any).user?.role !== "USER") {
+    res.status(403).json({
+      success: false,
+      message: "Only regular users can apply to become volunteers.",
+    });
+    return;
+  }
+
+  next();
+};
+
 
 // Event Validation Helpers
 const categories = [
@@ -1028,6 +1076,395 @@ app.get(
   }
 );
 
+// PATCH /api/organizer/volunteers/:id/status
+
+app.patch(
+  "/api/organizer/volunteers/:id/status",
+  verifyToken,
+  requireOrganizer,
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      const user = (req as any).user;
+
+      if (typeof id !== "string" || !ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid registration ID.",
+        });
+      }
+
+      if (!["CONFIRMED", "REJECTED"].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid registration status.",
+        });
+      }
+
+      const registration = await registrationsCollection.findOne({
+        _id: new ObjectId(id),
+        status: "PENDING",
+      });
+
+      if (!registration) {
+        return res.status(404).json({
+          success: false,
+          message: "Pending registration not found.",
+        });
+      }
+
+      // Verify that this event belongs to the current organizer
+      if (!ObjectId.isValid(registration.eventId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid event ID.",
+        });
+      }
+
+      const event = await eventsCollection.findOne({
+        _id: new ObjectId(registration.eventId),
+        organizerId: user.id,
+      });
+
+      if (!event) {
+        return res.status(403).json({
+          success: false,
+          message: "You cannot manage this registration.",
+        });
+      }
+
+      const result = await registrationsCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+          status: "PENDING",
+        },
+        {
+          $set: {
+            status,
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Registration status has already changed.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: `Registration ${status.toLowerCase()} successfully.`,
+      });
+    } catch (error) {
+      console.error("Update volunteer status error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update registration.",
+      });
+    }
+  }
+);
+
+// Volunteer Application API
+
+// POST /api/volunteer-applications
+app.post(
+  "/api/volunteer-applications",
+  verifyToken,
+  requireUser,
+  async (req: Request, res: Response) => {
+    try {
+      const userId = (req as any).user.id;
+
+      const { phone, motivation, skills = [] } = req.body;
+
+      if (
+        typeof phone !== "string" ||
+        !phone.trim() ||
+        typeof motivation !== "string" ||
+        !motivation.trim()
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Phone and motivation are required.",
+        });
+      }
+
+      if (
+        !Array.isArray(skills) ||
+        skills.length > 20 ||
+        !skills.every(
+          (skill: unknown) =>
+            typeof skill === "string" && skill.trim().length > 0
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Please provide a valid skills list.",
+        });
+      }
+
+      const user = await usersCollection.findOne({
+        $or: [{ _id: userId }, { id: userId }],
+      });
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: "User account not found.",
+        });
+      }
+
+      const existingApplication =
+        await volunteerApplicationsCollection.findOne({ userId });
+
+      if (existingApplication?.status === "PENDING") {
+        return res.status(409).json({
+          success: false,
+          message: "You already have a pending application.",
+        });
+      }
+
+      if (existingApplication?.status === "APPROVED") {
+        return res.status(409).json({
+          success: false,
+          message: "You are already an approved volunteer.",
+        });
+      }
+
+      const now = new Date();
+
+      const applicationData: VolunteerApplicationDocument = {
+        userId,
+        name: String(user.name || ""),
+        email: String(user.email || ""),
+        phone: phone.trim(),
+        motivation: motivation.trim(),
+        skills: skills.map((skill: string) => skill.trim()),
+        status: "PENDING",
+        submittedAt: now,
+        updatedAt: now,
+      };
+
+      if (existingApplication) {
+        await volunteerApplicationsCollection.updateOne(
+          { userId, status: "REJECTED" },
+          {
+            $set: applicationData,
+            $unset: {
+              reviewedAt: "",
+              reviewedBy: "",
+            },
+          }
+        );
+      } else {
+        await volunteerApplicationsCollection.insertOne(applicationData);
+      }
+
+      const application =
+        await volunteerApplicationsCollection.findOne({ userId });
+
+      return res.status(201).json({
+        success: true,
+        message: "Volunteer application submitted successfully.",
+        application,
+      });
+    } catch (error) {
+      console.error("Submit volunteer application error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to submit volunteer application.",
+      });
+    }
+  }
+);
+
+// GET /api/volunteer-applications/my-application
+app.get(
+  "/api/volunteer-applications/my-application",
+  verifyToken,
+  async (req: Request, res: Response) => {
+    try {
+      const user = (req as any).user;
+
+      if (!["USER", "VOLUNTEER"].includes(user?.role)) {
+        return res.status(403).json({
+          success: false,
+          message: "Access denied.",
+        });
+      }
+
+      const application =
+        await volunteerApplicationsCollection.findOne({
+          userId: user.id,
+        });
+
+      return res.status(200).json({
+        success: true,
+        application,
+      });
+    } catch (error) {
+      console.error("Get volunteer application error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch volunteer application.",
+      });
+    }
+  }
+);
+
+// GET /api/organizer/volunteer-applications
+app.get(
+  "/api/organizer/volunteer-applications",
+  verifyToken,
+  requireOrganizer,
+  async (_req: Request, res: Response) => {
+    try {
+      const applications =
+        await volunteerApplicationsCollection
+          .find({})
+          .sort({ submittedAt: -1 })
+          .toArray();
+
+      return res.status(200).json({
+        success: true,
+        applications,
+      });
+    } catch (error) {
+      console.error("Get applications error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch volunteer applications.",
+      });
+    }
+  }
+);
+
+// PATCH /api/organizer/volunteer-applications/:id/status
+app.patch(
+  "/api/organizer/volunteer-applications/:id",
+  verifyToken,
+  requireOrganizer,
+  async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const organizerId = (req as any).user.id;
+      const { status } = req.body;
+
+      if (typeof id !== "string" || !ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid application ID.",
+        });
+      }
+
+      if (!["APPROVED", "REJECTED"].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid application status.",
+        });
+      }
+
+      const application =
+        await volunteerApplicationsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+      if (!application) {
+        return res.status(404).json({
+          success: false,
+          message: "Volunteer application not found.",
+        });
+      }
+
+      if (application.status !== "PENDING") {
+        return res.status(409).json({
+          success: false,
+          message: "This application has already been reviewed.",
+        });
+      }
+
+      if (status === "APPROVED") {
+        const userUpdate = await usersCollection.updateOne(
+          {
+            $or: [
+              { _id: application.userId },
+              { id: application.userId },
+            ],
+            role: "USER",
+          },
+          {
+            $set: {
+              role: "VOLUNTEER",
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        if (userUpdate.matchedCount === 0) {
+          return res.status(409).json({
+            success: false,
+            message:
+              "The user could not be found or is no longer a regular user.",
+          });
+        }
+
+        // Revoke existing Better Auth sessions.
+        // The user must sign in again to receive the new role.
+        await sessionsCollection.deleteMany({
+          userId: application.userId,
+        });
+      }
+
+      const now = new Date();
+
+      const result = await volunteerApplicationsCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+          status: "PENDING",
+        },
+        {
+          $set: {
+            status,
+            reviewedAt: now,
+            reviewedBy: organizerId,
+            updatedAt: now,
+          },
+        }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Application status has already changed.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message:
+          status === "APPROVED"
+            ? "Volunteer approved successfully."
+            : "Volunteer application rejected successfully.",
+      });
+    } catch (error) {
+      console.error("Review volunteer application error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to review volunteer application.",
+      });
+    }
+  }
+);
+
 
 
 app.get('/', (req: Request, res: Response) => {
@@ -1046,7 +1483,14 @@ async function startServer() {
 
     registrationsCollection = db.collection<RegistrationDocument>("registrations");
 
+    volunteerApplicationsCollection = db.collection<VolunteerApplicationDocument>("volunteer_applications");
+
+    usersCollection = db.collection("users");
+    sessionsCollection = db.collection("sessions");
+
     await registrationsCollection.createIndex({ eventId: 1, volunteerId: 1 }, { unique: true });
+
+    await volunteerApplicationsCollection.createIndex({ userId: 1 }, { unique: true });
 
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
