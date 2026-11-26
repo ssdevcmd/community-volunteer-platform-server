@@ -1171,6 +1171,7 @@ app.patch(
 
 // Volunteer Application API
 
+
 // POST /api/volunteer-applications
 app.post(
   "/api/volunteer-applications",
@@ -1178,9 +1179,19 @@ app.post(
   requireUser,
   async (req: Request, res: Response) => {
     try {
-      const userId = (req as any).user.id;
+      const authUser = (req as any).user;
+
+      const userId = authUser.id;
+      const email = authUser.email;
 
       const { phone, motivation, skills = [] } = req.body;
+
+      if (!email || !userId) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid authentication information.",
+        });
+      }
 
       if (
         typeof phone !== "string" ||
@@ -1208,11 +1219,18 @@ app.post(
         });
       }
 
+      // Find Better Auth user by email
       const user = await usersCollection.findOne({
-        $or: [{ _id: userId }, { id: userId }],
+        email: email,
       });
 
       if (!user) {
+        console.log("User not found:", {
+          userId,
+          email,
+          collection: usersCollection.collectionName,
+        });
+
         return res.status(404).json({
           success: false,
           message: "User account not found.",
@@ -1283,6 +1301,7 @@ app.post(
     }
   }
 );
+
 
 // GET /api/volunteer-applications/my-application
 app.get(
@@ -1485,8 +1504,8 @@ async function startServer() {
 
     volunteerApplicationsCollection = db.collection<VolunteerApplicationDocument>("volunteer_applications");
 
-    usersCollection = db.collection("users");
-    sessionsCollection = db.collection("sessions");
+    usersCollection = db.collection("user");
+    sessionsCollection = db.collection("session");
 
     await registrationsCollection.createIndex({ eventId: 1, volunteerId: 1 }, { unique: true });
 
