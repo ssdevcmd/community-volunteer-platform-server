@@ -1411,32 +1411,47 @@ app.patch(
       }
 
       if (status === "APPROVED") {
-        const userUpdate = await usersCollection.updateOne(
-          {
-            $or: [
-              { _id: application.userId },
-              { id: application.userId },
-            ],
-            role: "USER",
-          },
-          {
-            $set: {
-              role: "VOLUNTEER",
-              updatedAt: new Date(),
-            },
-          }
-        );
+        // Find user using the email saved with the application
+        const user = await usersCollection.findOne({
+          email: application.email,
+        });
 
-        if (userUpdate.matchedCount === 0) {
-          return res.status(409).json({
+        if (!user) {
+          return res.status(404).json({
             success: false,
-            message:
-              "The user could not be found or is no longer a regular user.",
+            message: "Applicant user account not found.",
           });
         }
 
-        // Revoke existing Better Auth sessions.
-        // The user must sign in again to receive the new role.
+        // Update role only if the user is still a regular user
+        if (user.role === "USER") {
+          const userUpdate = await usersCollection.updateOne(
+            {
+              email: application.email,
+              role: "USER",
+            },
+            {
+              $set: {
+                role: "VOLUNTEER",
+                updatedAt: new Date(),
+              },
+            }
+          );
+
+          if (userUpdate.matchedCount === 0) {
+            return res.status(409).json({
+              success: false,
+              message: "User role has already changed.",
+            });
+          }
+        } else if (user.role !== "VOLUNTEER") {
+          return res.status(409).json({
+            success: false,
+            message: "User is not eligible for volunteer approval.",
+          });
+        }
+
+        // Revoke existing Better Auth sessions
         await sessionsCollection.deleteMany({
           userId: application.userId,
         });
