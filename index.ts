@@ -336,6 +336,109 @@ app.get("/api/events", async (req: Request, res: Response) => {
   }
 });
 
+// GET Homepage Hero Events (Top 3)
+// GET Homepage Hero Data
+app.get("/api/home/hero", async (req: Request, res: Response) => {
+  try {
+    const now = new Date();
+
+    // Get all published events
+    const publishedEvents = await eventsCollection
+      .find({ status: "PUBLISHED" })
+      .toArray();
+
+    // Select upcoming events
+    const upcomingEvents = publishedEvents
+      .filter((event) => {
+        const eventDate = new Date(event.date);
+        return (
+          !Number.isNaN(eventDate.getTime()) &&
+          eventDate > now
+        );
+      })
+      .sort(
+        (a, b) =>
+          new Date(a.date).getTime() -
+          new Date(b.date).getTime()
+      )
+      .slice(0, 3);
+
+    // Get event IDs as strings because registration.eventId is a string
+    const eventIds = upcomingEvents.map((event) =>
+      event._id.toString()
+    );
+
+    // Count registrations for the selected events
+    const registrationCounts =
+      eventIds.length > 0
+        ? await registrationsCollection
+            .aggregate([
+              {
+                $match: {
+                  eventId: { $in: eventIds },
+                  status: {
+                    $in: ["PENDING", "CONFIRMED", "COMPLETED"],
+                  },
+                },
+              },
+              {
+                $group: {
+                  _id: "$eventId",
+                  registered: { $sum: 1 },
+                },
+              },
+            ])
+            .toArray()
+        : [];
+
+    // Convert registration counts into a lookup object
+    const registrationCountMap = new Map(
+      registrationCounts.map((item) => [
+        item._id,
+        item.registered,
+      ])
+    );
+
+    // Format events for the Hero Section
+    const events = upcomingEvents.map((event) => ({
+      id: event._id.toString(),
+      title: event.title,
+      date: event.date,
+      location: event.location,
+      category: event.category,
+      capacity: event.maxVolunteers,
+      registered:
+        registrationCountMap.get(event._id.toString()) ?? 0,
+    }));
+
+    // Homepage statistics
+    const [totalEvents, totalVolunteers] = await Promise.all([
+      eventsCollection.countDocuments({
+        status: "PUBLISHED",
+      }),
+      usersCollection.countDocuments({
+        role: "VOLUNTEER",
+      }),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      events,
+      stats: {
+        events: totalEvents,
+        volunteers: totalVolunteers,
+      },
+    });
+  } catch (error) {
+    console.error("Homepage hero data error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch homepage hero data.",
+    });
+  }
+});
+
 // GET Organizer's Events
 app.get(
   "/api/events/my-events",
